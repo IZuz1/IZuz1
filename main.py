@@ -1,4 +1,3 @@
-import asyncio
 import logging
 import os
 
@@ -82,18 +81,13 @@ async def chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         logging.exception("OpenAI error")
         await update.message.reply_text(f"Упс, произошла ошибка: {e}")
 
-async def main() -> None:
-    if not TELEGRAM_BOT_TOKEN:
-        raise RuntimeError("TELEGRAM_BOT_TOKEN отсутствует. Укажи его в .env")
-
+if __name__ == "__main__":
+    # строим приложение как раньше
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start_handler))
     app.add_handler(CommandHandler("help", help_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat_handler))
 
-    # Long polling (самый простой старт)
-    await app.run_polling(close_loop=False)
-
-if __name__ == "__main__":
-    asyncio.run(main())
+    # ВАЖНО: без asyncio.run и без await — этот вызов блокирующий и сам рулит циклом
+    app.run_polling()
