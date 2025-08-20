@@ -2,7 +2,8 @@ import logging
 import os
 
 from dotenv import load_dotenv
-from openai import OpenAI
+from google import genai
+from google.genai import types
 from telegram import Update
 from telegram.constants import ChatAction
 from telegram.ext import (
@@ -16,32 +17,26 @@ from telegram.ext import (
 load_dotenv()
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "deepseek/deepseek-r1")
-APP_PUBLIC_URL = os.getenv("APP_PUBLIC_URL")  # для HTTP-Referer (опционально)
-APP_TITLE = os.getenv("APP_TITLE")            # для X-Title (опционально)
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 
-# OpenRouter: OpenAI-совместимый клиент + свой base_url
-client = OpenAI(
-    api_key=OPENROUTER_API_KEY,
-    base_url="https://openrouter.ai/api/v1",
-)
+# Клиент возьмёт ключ из GEMINI_API_KEY автоматически (или можно client = genai.Client(api_key=...))
+client = genai.Client()
 
 WELCOME_TEXT = (
-    "Привет! Я Telegram-бот через OpenRouter + DeepSeek R1. Пиши — отвечу.\n\n"
+    "Привет! Я Telegram-бот на Google Gemini. Напиши сообщение — отвечу.\n\n"
     "Команды:\n"
     "/start — приветствие\n"
     "/help — помощь"
 )
 
 HELP_TEXT = (
-    "Отправь текст — верну ответ от модели DeepSeek R1 через OpenRouter.\n"
-    "Показываю только финальный ответ (без CoT/рассуждений)."
+    "Отправь текст — я верну ответ от модели Gemini.\n"
+    "Показываю только финальный ответ, без промежуточных рассуждений."
 )
 
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -49,15 +44,6 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(HELP_TEXT)
-
-def _extra_headers():
-    # Опциональные заголовки для OpenRouter (идентификация приложения)
-    hdrs = {}
-    if APP_PUBLIC_URL:
-        hdrs["HTTP-Referer"] = APP_PUBLIC_URL
-    if APP_TITLE:
-        hdrs["X-Title"] = APP_TITLE
-    return hdrs or None
 
 async def chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.message.text:
@@ -67,32 +53,33 @@ async def chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
 
     try:
-        # Через OpenRouter используем OpenAI-совместимый Chat Completions
-        resp = client.chat.completions.create(
-            model=OPENROUTER_MODEL,  # напр. deepseek/deepseek-r1:free
-            messages=[
-                {"role": "system", "content": "Отвечай кратко и по делу. Не раскрывай ход рассуждений."},
-                {"role": "user", "content": user_text},
-            ],
-            temperature=0.7,
-            max_tokens=600,
-            extra_headers=_extra_headers(),
+        # Stateless-вызов Gemini. По желанию можно добавить свою память чата (history) поверх.
+        resp = client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=user_text,
+            config=types.GenerateContentConfig(
+                system_instruction="Отвечай кратко и по делу. Не раскрывай ход рассуждений.",
+                temperature=0.7,
+                max_output_tokens=600,
+                # Отключаем 'thinking' для 2.5 flash (снижает расход и исключает CoT-вывод)
+                thinking_config=types.ThinkingConfig(thinking_budget=0),
+            ),
         )
 
-        ai_text = (resp.choices[0].message.content or "").strip()
+        ai_text = (resp.text or "").strip()
         if not ai_text:
             ai_text = "Хмм, не смог сформировать ответ. Попробуй переформулировать."
+
         await update.message.reply_text(ai_text, disable_web_page_preview=True)
 
     except Exception as e:
-        logging.exception("OpenRouter API error")
+        logging.exception("Gemini API error")
         await update.message.reply_text(f"Упс, произошла ошибка: {e}")
 
 if __name__ == "__main__":
     if not TELEGRAM_BOT_TOKEN:
         raise RuntimeError("TELEGRAM_BOT_TOKEN отсутствует. Укажи его в .env")
-    if not OPENROUTER_API_KEY:
-        raise RuntimeError("OPENROUTER_API_KEY отсутствует. Укажи его в .env")
+    # GEMINI_API_KEY читает сам клиент (переменная окружения обязательна)
 
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start_handler))
